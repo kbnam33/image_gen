@@ -3,6 +3,7 @@ import { generatePrompt, generateImage, fileToBase64, editImageWithAnnotation } 
 import { ASPECT_RATIOS, LIGHTING_STYLES, CAMERA_PERSPECTIVES } from './constants';
 import type { ImageFile, Base64Image, HistoryItem } from './types';
 import AnnotationEditor from './AnnotationEditor';
+import PatternFixEditor from './PatternFixEditor';
 
 const UploadIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -23,6 +24,12 @@ const EditIcon = () => (
     </svg>
 );
 
+const WandIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v1.046a1 1 0 01.995 1.037 11.96 11.96 0 01-1.414 5.923A1 1 0 0111 10.046V11a1 1 0 01-1 1H9a1 1 0 01-1-1v-.954a1 1 0 01.586-.914 11.96 11.96 0 01-1.414-5.923A1 1 0 018 3.046V2a1 1 0 01.7-1.954l.328-.11A1 1 0 0110 0h.054a1 1 0 01.995.037l.25.086zM3 13.954a1 1 0 01.914-.586 11.96 11.96 0 015.923-1.414A1 1 0 0110 11.046V12a1 1 0 01-1 1H8a1 1 0 01-1-1v-.054a1 1 0 01.037-.995l.086-.25A1 1 0 016.046 9H5a1 1 0 01-1-1v-1a1 1 0 01.954-.7 11.96 11.96 0 015.923 1.414 1 1 0 01.914.586V8a1 1 0 01-1 1h-.954a1 1 0 01-.914-.586A11.96 11.96 0 014 3.046 1 1 0 014.954 2H5a1 1 0 011-1h1a1 1 0 011 1v1.046a1 1 0 01-.995 1.037A11.96 11.96 0 016.086 10a1 1 0 01-.586.914V11a1 1 0 011 1h.954a1 1 0 01.914.586 11.96 11.96 0 011.414 5.923A1 1 0 018.954 18H8a1 1 0 01-1-1v-1a1 1 0 01-.954-.7A11.96 11.96 0 01.171 10a1 1 0 01.586-.914V8a1 1 0 011-1h1a1 1 0 011 1v.954a1 1 0 01-.037.995l-.086.25A1 1 0 013.954 11H3a1 1 0 01-1 1v1a1 1 0 01.954.7z" clipRule="evenodd" />
+    </svg>
+);
+
 
 const DownloadIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -34,6 +41,12 @@ const CloseIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
   </svg>
+);
+
+const PlusIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1.5" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+    </svg>
 );
 
 interface ImageUploaderProps {
@@ -94,6 +107,7 @@ export default function App() {
   const [cameraPerspective, setCameraPerspective] = useState<string>(CAMERA_PERSPECTIVES[5]); // Default to Top-down flat lay
   const [isHDUpscaleMode, setIsHDUpscaleMode] = useState<boolean>(true); // Default to true
   const [preserveProduct, setPreserveProduct] = useState<boolean>(true); // Default to true
+  const [preserveBackground, setPreserveBackground] = useState<boolean>(false); // Default to false
   const [userIntent, setUserIntent] = useState<string>('');
   const [prompt, setPrompt] = useState<string>('');
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
@@ -103,6 +117,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isLightboxOpen, setIsLightboxOpen] = useState<boolean>(false);
   const [isAnnotationModalOpen, setIsAnnotationModalOpen] = useState<boolean>(false);
+  const [isPatternFixModalOpen, setIsPatternFixModalOpen] = useState<boolean>(false);
   
   const handleImageChange = (setter: React.Dispatch<React.SetStateAction<ImageFile | null>>) => (file: File | null) => {
     setter(current => {
@@ -117,17 +132,33 @@ export default function App() {
   };
   
   const triggerPromptGeneration = useCallback(async () => {
-    if (!productImage) {
-      setError("Please upload a product photo first to generate a relevant prompt.");
-      return;
-    }
     setIsLoadingPrompt(true);
     setError(null);
     
     try {
-      const prodImgBase64 = await fileToBase64(productImage.file);
+      let inputImageBase64: Base64Image | null = null;
+      // Use the active (latest) image for iterative prompts, otherwise use the initial upload
+      const isIterative = history.length > 0 && activeImageUrl;
+      
+      if (activeImageUrl) {
+        inputImageBase64 = {
+          data: activeImageUrl.split(',')[1],
+          mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
+        };
+      } else if (productImage) {
+        inputImageBase64 = await fileToBase64(productImage.file);
+      }
+
+      if (!inputImageBase64) {
+        setError("Please upload a product photo or select an image from history to generate a prompt.");
+        setIsLoadingPrompt(false);
+        return;
+      }
+
       const refImgBase64 = referenceImage ? await fileToBase64(referenceImage.file) : undefined;
-      const newPrompt = await generatePrompt(prodImgBase64, userIntent, aspectRatio, lightingStyle, cameraPerspective, refImgBase64, prompt);
+      // If it's an iterative step, we pass the previous prompt. Otherwise, pass undefined.
+      const previousPrompt = isIterative ? prompt : undefined;
+      const newPrompt = await generatePrompt(inputImageBase64, userIntent, aspectRatio, lightingStyle, cameraPerspective, preserveBackground, refImgBase64, previousPrompt);
       setPrompt(newPrompt);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An unknown error occurred.');
@@ -135,36 +166,61 @@ export default function App() {
     } finally {
       setIsLoadingPrompt(false);
     }
-  }, [productImage, userIntent, aspectRatio, lightingStyle, cameraPerspective, referenceImage, prompt]);
+  }, [activeImageUrl, productImage, userIntent, aspectRatio, lightingStyle, cameraPerspective, referenceImage, prompt, history, preserveBackground]);
 
   const handleGenerateImage = async () => {
-    if (!productImage || !prompt) {
-      setError("Please upload a product image and generate a prompt first.");
-      return;
+    let inputImageBase64: Base64Image | null = null;
+    if (activeImageUrl) {
+        inputImageBase64 = {
+            data: activeImageUrl.split(',')[1],
+            mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
+        };
+    } else if (productImage) {
+        inputImageBase64 = await fileToBase64(productImage.file);
     }
+
+    if (!inputImageBase64) {
+        setError("Please upload a product image or select a history image to generate a new one.");
+        return;
+    }
+    if (!prompt) {
+        setError("Please generate or write a prompt first.");
+        return;
+    }
+
     setIsLoadingImage(true);
-    setActiveImageUrl(null);
     setError(null);
 
     try {
-      const productImageBase64 = await fileToBase64(productImage.file);
-      const imageUrl = await generateImage(productImageBase64, prompt, isHDUpscaleMode, preserveProduct);
-      const newHistoryItem: HistoryItem = { imageUrl, prompt };
-      setHistory(prev => [newHistoryItem, ...prev]);
-      setActiveImageUrl(imageUrl);
+        const imageUrl = await generateImage(inputImageBase64, prompt, isHDUpscaleMode, preserveProduct, preserveBackground);
+        const newHistoryItem: HistoryItem = { imageUrl, prompt };
+        setHistory(prev => [newHistoryItem, ...prev]);
+        setActiveImageUrl(imageUrl);
+        setUserIntent(''); // Clear intent for the next iteration
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'An unknown error occurred during image generation.');
+        setError(e instanceof Error ? e.message : 'An unknown error occurred during image generation.');
     } finally {
-      setIsLoadingImage(false);
+        setIsLoadingImage(false);
     }
   };
+
 
   const handleHistoryClick = (item: HistoryItem) => {
     setActiveImageUrl(item.imageUrl);
     setPrompt(item.prompt);
   };
 
-  const handleAnnotationGenerate = async ({ mask, instruction }: { mask: Base64Image, instruction: string }) => {
+  const handleAnnotationGenerate = async ({
+    destinationMask,
+    referenceImage,
+    sourceMask,
+    instruction,
+  }: {
+    destinationMask: Base64Image;
+    referenceImage: Base64Image;
+    sourceMask: Base64Image;
+    instruction: string;
+  }) => {
     if (!activeImageUrl) return;
     setIsLoadingImage(true);
     setIsAnnotationModalOpen(false);
@@ -173,13 +229,19 @@ export default function App() {
     try {
       const originalImageBase64: Base64Image = {
         data: activeImageUrl.split(',')[1],
-        mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png'
+        mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
       };
 
-      const imageUrl = await editImageWithAnnotation(originalImageBase64, mask, instruction);
+      const imageUrl = await editImageWithAnnotation(
+        originalImageBase64,
+        destinationMask,
+        referenceImage,
+        sourceMask,
+        instruction
+      );
       const newHistoryItem: HistoryItem = { imageUrl, prompt: `Edit: ${instruction}` };
-      
-      setHistory(prev => [newHistoryItem, ...prev]);
+
+      setHistory((prev) => [newHistoryItem, ...prev]);
       setActiveImageUrl(imageUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An unknown error occurred during image editing.');
@@ -187,9 +249,65 @@ export default function App() {
       setIsLoadingImage(false);
     }
   };
+  
+  const handlePatternFixSubmit = async ({ destinationMask, sourceMask }: { destinationMask: Base64Image; sourceMask: Base64Image; }) => {
+    if (!activeImageUrl) return;
+    setIsLoadingImage(true);
+    setIsPatternFixModalOpen(false);
+    setError(null);
+
+    try {
+      const imageBase64: Base64Image = {
+        data: activeImageUrl.split(',')[1],
+        mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
+      };
+      
+      const instruction = "Analyze the source pattern identified by the blue mask. Inpaint the destination area (identified by the red mask) with this source pattern. Ensure a seamless, photorealistic blend, matching lighting, shadows, and texture.";
+
+      const imageUrl = await editImageWithAnnotation(
+        imageBase64,
+        destinationMask,
+        imageBase64, 
+        sourceMask,
+        instruction
+      );
+      const newHistoryItem: HistoryItem = { imageUrl, prompt: `Fix Pattern: Replaced area with texture from same image.` };
+
+      setHistory((prev) => [newHistoryItem, ...prev]);
+      setActiveImageUrl(imageUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'An unknown error occurred during pattern fixing.');
+    } finally {
+      setIsLoadingImage(false);
+    }
+  };
+
+  const handleNewProject = () => {
+    if (window.confirm("Are you sure you want to start a new project? This will clear your current settings and uploads, but your history will be preserved.")) {
+      if (productImage?.previewUrl) {
+          URL.revokeObjectURL(productImage.previewUrl);
+      }
+      if (referenceImage?.previewUrl) {
+          URL.revokeObjectURL(referenceImage.previewUrl);
+      }
+      setProductImage(null);
+      setReferenceImage(null);
+      setAspectRatio(ASPECT_RATIOS[4]);
+      setLightingStyle(LIGHTING_STYLES[1]);
+      setCameraPerspective(CAMERA_PERSPECTIVES[5]);
+      setIsHDUpscaleMode(true);
+      setPreserveProduct(true);
+      setPreserveBackground(false);
+      setUserIntent('');
+      setPrompt('');
+      setActiveImageUrl(null);
+      setError(null);
+    }
+  };
 
 
   const controlsDisabled = isLoadingImage || isLoadingPrompt;
+  const isIterativeState = history.length > 0 && !!activeImageUrl;
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 font-sans flex flex-col">
@@ -202,7 +320,17 @@ export default function App() {
       <main className="flex-grow container mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Control Panel */}
         <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700 flex flex-col gap-6 h-fit">
-          <h2 className="text-xl font-semibold text-gray-300 border-b border-gray-700 pb-3">1. Upload & Configure</h2>
+          <div className="flex justify-between items-center border-b border-gray-700 pb-3">
+            <h2 className="text-xl font-semibold text-gray-300">1. Upload & Configure</h2>
+            <button
+                onClick={handleNewProject}
+                className="flex items-center text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold py-1.5 px-3 rounded-lg transition-colors"
+                title="Start a new project"
+            >
+                <PlusIcon />
+                New Project
+            </button>
+          </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <ImageUploader id="product-image" label="Product Photo" imageFile={productImage} onImageChange={handleImageChange(setProductImage)} disabled={isLoadingImage} />
@@ -230,10 +358,23 @@ export default function App() {
                 checked={preserveProduct}
                 onChange={(e) => setPreserveProduct(e.target.checked)}
                 className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                disabled={!isHDUpscaleMode || isLoadingImage}
+                disabled={isLoadingImage}
               />
-              <label htmlFor="preserve-product" className={`font-medium transition-colors ${!isHDUpscaleMode ? 'text-gray-500' : 'text-gray-300'}`}>
+              <label htmlFor="preserve-product" className="font-medium text-gray-300">
                 Preserve original product details
+              </label>
+            </div>
+            <div className="flex items-center space-x-3 bg-gray-900/50 p-3 rounded-lg border border-gray-700">
+              <input
+                id="preserve-background"
+                type="checkbox"
+                checked={preserveBackground}
+                onChange={(e) => setPreserveBackground(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                disabled={isLoadingImage}
+              />
+              <label htmlFor="preserve-background" className="font-medium text-gray-300">
+                Preserve original background
               </label>
             </div>
           </div>
@@ -247,13 +388,13 @@ export default function App() {
           
           <div>
             <label htmlFor="user-intent" className="block text-sm font-medium text-gray-400 mb-2">
-              {prompt ? `What's next? (e.g., "make it warmer")` : `What is your goal for this photo?`}
+              {isIterativeState ? `What's next? (e.g., "make it warmer")` : `What is your goal for this photo?`}
             </label>
             <textarea
               id="user-intent"
               rows={2}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors duration-200 disabled:opacity-50"
-              placeholder={prompt ? "Describe your changes..." : "e.g., 'A shot for a luxury wedding collection'."}
+              placeholder={isIterativeState ? "Describe your changes..." : "e.g., 'A shot for a luxury wedding collection'."}
               value={userIntent}
               onChange={e => setUserIntent(e.target.value)}
               disabled={isLoadingImage}
@@ -262,11 +403,11 @@ export default function App() {
 
           <button
             onClick={triggerPromptGeneration}
-            disabled={!productImage || isLoadingPrompt || isLoadingImage}
+            disabled={(!productImage && !activeImageUrl) || isLoadingPrompt || isLoadingImage}
             className="w-full flex items-center justify-center bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg transition-all duration-200"
           >
             <SparklesIcon />
-            {prompt ? 'Generate Next Prompt' : 'Generate Creative Prompt'}
+            {isIterativeState ? 'Generate Next Prompt' : 'Generate Creative Prompt'}
           </button>
 
           <div>
@@ -289,7 +430,7 @@ export default function App() {
           
           <button
             onClick={handleGenerateImage}
-            disabled={isLoadingImage || !productImage || !prompt}
+            disabled={isLoadingImage || (!productImage && !activeImageUrl) || !prompt}
             className="w-full flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-900 disabled:text-gray-500 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 text-lg"
           >
             {isLoadingImage ? (
@@ -327,15 +468,26 @@ export default function App() {
             )}
           </div>
           
-          <button
-              onClick={() => setIsAnnotationModalOpen(true)}
-              disabled={!activeImageUrl || isLoadingImage}
-              title={!activeImageUrl ? "Generate an image first to enable editing" : "Annotate and edit the current image"}
-              className="w-full mt-4 flex items-center justify-center bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg transition-all duration-200"
-          >
-              <EditIcon />
-              Annotate & Edit
-          </button>
+          <div className="flex gap-4 mt-4">
+            <button
+                onClick={() => setIsAnnotationModalOpen(true)}
+                disabled={!activeImageUrl || isLoadingImage}
+                title={!activeImageUrl ? "Generate an image first to enable editing" : "Annotate and edit the current image"}
+                className="flex-1 flex items-center justify-center bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg transition-all duration-200"
+            >
+                <EditIcon />
+                Annotate & Edit
+            </button>
+            <button
+                onClick={() => setIsPatternFixModalOpen(true)}
+                disabled={!activeImageUrl || isLoadingImage}
+                title={!activeImageUrl ? "Generate an image first to enable pattern fixing" : "Fix a pattern or texture using another part of the image"}
+                className="flex-1 flex items-center justify-center bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg transition-all duration-200"
+            >
+                <WandIcon />
+                Fix Pattern
+            </button>
+          </div>
 
           {history.length > 0 && (
             <div className="mt-6 pt-6 border-t border-gray-700">
@@ -395,6 +547,14 @@ export default function App() {
                 isOpen={isAnnotationModalOpen}
                 onClose={() => setIsAnnotationModalOpen(false)}
                 onSubmit={handleAnnotationGenerate}
+                imageUrl={activeImageUrl}
+            />
+        )}
+        {isPatternFixModalOpen && activeImageUrl && (
+            <PatternFixEditor 
+                isOpen={isPatternFixModalOpen}
+                onClose={() => setIsPatternFixModalOpen(false)}
+                onSubmit={handlePatternFixSubmit}
                 imageUrl={activeImageUrl}
             />
         )}
