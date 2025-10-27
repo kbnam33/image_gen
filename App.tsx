@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { generatePrompt, generateImage, fileToBase64, editImageWithAnnotation } from './services/geminiService';
+import { generatePrompt, generateImage, fileToBase64, editImageWithAnnotation, removeBackground } from './services/geminiService';
 import { ASPECT_RATIOS, LIGHTING_STYLES, CAMERA_PERSPECTIVES } from './constants';
 import type { ImageFile, Base64Image, HistoryItem } from './types';
 import AnnotationEditor from './AnnotationEditor';
@@ -114,6 +114,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isLoadingPrompt, setIsLoadingPrompt] = useState<boolean>(false);
   const [isLoadingImage, setIsLoadingImage] = useState<boolean>(false);
+  const [loadingStep, setLoadingStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [isLightboxOpen, setIsLightboxOpen] = useState<boolean>(false);
   const [isAnnotationModalOpen, setIsAnnotationModalOpen] = useState<boolean>(false);
@@ -136,7 +137,7 @@ export default function App() {
     setError(null);
     
     try {
-      let inputImageBase64: Base64Image | null = null;
+      let inputImageBase64: Base64Image | undefined = undefined;
       // Use the active (latest) image for iterative prompts, otherwise use the initial upload
       const isIterative = history.length > 0 && activeImageUrl;
       
@@ -149,16 +150,10 @@ export default function App() {
         inputImageBase64 = await fileToBase64(productImage.file);
       }
 
-      if (!inputImageBase64) {
-        setError("Please upload a product photo or select an image from history to generate a prompt.");
-        setIsLoadingPrompt(false);
-        return;
-      }
-
       const refImgBase64 = referenceImage ? await fileToBase64(referenceImage.file) : undefined;
       // If it's an iterative step, we pass the previous prompt. Otherwise, pass undefined.
       const previousPrompt = isIterative ? prompt : undefined;
-      const newPrompt = await generatePrompt(inputImageBase64, userIntent, aspectRatio, lightingStyle, cameraPerspective, preserveBackground, refImgBase64, previousPrompt);
+      const newPrompt = await generatePrompt(userIntent, aspectRatio, lightingStyle, cameraPerspective, preserveBackground, inputImageBase64, refImgBase64, previousPrompt);
       setPrompt(newPrompt);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An unknown error occurred.');
@@ -169,30 +164,50 @@ export default function App() {
   }, [activeImageUrl, productImage, userIntent, aspectRatio, lightingStyle, cameraPerspective, referenceImage, prompt, history, preserveBackground]);
 
   const handleGenerateImage = async () => {
-    let inputImageBase64: Base64Image | null = null;
-    if (activeImageUrl) {
-        inputImageBase64 = {
-            data: activeImageUrl.split(',')[1],
-            mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
-        };
-    } else if (productImage) {
-        inputImageBase64 = await fileToBase64(productImage.file);
-    }
-
-    if (!inputImageBase64) {
-        setError("Please upload a product image or select a history image to generate a new one.");
-        return;
-    }
     if (!prompt) {
         setError("Please generate or write a prompt first.");
         return;
     }
 
     setIsLoadingImage(true);
+    setLoadingStep('');
     setError(null);
 
     try {
-        const imageUrl = await generateImage(inputImageBase64, prompt, isHDUpscaleMode, preserveProduct, preserveBackground);
+        let inputImageForGeneration: Base64Image | undefined;
+        let refImageBase64: Base64Image | undefined;
+
+        // --- Step 1: Prepare the base product image (with background removal if needed) ---
+        const isReplacingBackground = !preserveBackground && productImage;
+
+        if (isReplacingBackground) {
+            setLoadingStep('Step 1/2: Removing background...');
+            const originalProductBase64 = await fileToBase64(productImage.file);
+            const cutoutImageString = await removeBackground(originalProductBase64); 
+            inputImageForGeneration = {
+                data: cutoutImageString.split(',')[1],
+                mimeType: cutoutImageString.match(/:(.*?);/)?.[1] || 'image/png',
+            };
+        } else if (activeImageUrl) {
+            // For iterative edits (preserving background), use the last generated image
+            inputImageForGeneration = {
+                data: activeImageUrl.split(',')[1],
+                mimeType: activeImageUrl.match(/:(.*?);/)?.[1] || 'image/png',
+            };
+        } else if (productImage) {
+            // For initial generation (preserving background), use the uploaded image
+            inputImageForGeneration = await fileToBase64(productImage.file);
+        }
+
+        // Prepare style reference image if provided for background replacement
+        if (!preserveBackground && referenceImage) {
+          refImageBase64 = await fileToBase64(referenceImage.file);
+        }
+
+        // --- Step 2: Generate the final image ---
+        setLoadingStep(isReplacingBackground ? 'Step 2/2: Generating final image...' : 'Generating image...');
+        const imageUrl = await generateImage(prompt, isHDUpscaleMode, preserveProduct, preserveBackground, inputImageForGeneration, refImageBase64);
+        
         const newHistoryItem: HistoryItem = { imageUrl, prompt };
         setHistory(prev => [newHistoryItem, ...prev]);
         setActiveImageUrl(imageUrl);
@@ -201,6 +216,7 @@ export default function App() {
         setError(e instanceof Error ? e.message : 'An unknown error occurred during image generation.');
     } finally {
         setIsLoadingImage(false);
+        setLoadingStep('');
     }
   };
 
@@ -308,6 +324,7 @@ export default function App() {
 
   const controlsDisabled = isLoadingImage || isLoadingPrompt;
   const isIterativeState = history.length > 0 && !!activeImageUrl;
+  const preserveOptionsDisabled = isLoadingImage || (!productImage && !activeImageUrl);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 font-sans flex flex-col">
@@ -358,9 +375,9 @@ export default function App() {
                 checked={preserveProduct}
                 onChange={(e) => setPreserveProduct(e.target.checked)}
                 className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                disabled={isLoadingImage}
+                disabled={preserveOptionsDisabled}
               />
-              <label htmlFor="preserve-product" className="font-medium text-gray-300">
+              <label htmlFor="preserve-product" className={`font-medium transition-colors ${preserveOptionsDisabled ? 'text-gray-500' : 'text-gray-300'}`}>
                 Preserve original product details
               </label>
             </div>
@@ -371,9 +388,9 @@ export default function App() {
                 checked={preserveBackground}
                 onChange={(e) => setPreserveBackground(e.target.checked)}
                 className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                disabled={isLoadingImage}
+                disabled={preserveOptionsDisabled}
               />
-              <label htmlFor="preserve-background" className="font-medium text-gray-300">
+              <label htmlFor="preserve-background" className={`font-medium transition-colors ${preserveOptionsDisabled ? 'text-gray-500' : 'text-gray-300'}`}>
                 Preserve original background
               </label>
             </div>
@@ -403,7 +420,7 @@ export default function App() {
 
           <button
             onClick={triggerPromptGeneration}
-            disabled={(!productImage && !activeImageUrl) || isLoadingPrompt || isLoadingImage}
+            disabled={(!productImage && !activeImageUrl && !userIntent) || isLoadingPrompt || isLoadingImage}
             className="w-full flex items-center justify-center bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg transition-all duration-200"
           >
             <SparklesIcon />
@@ -430,13 +447,13 @@ export default function App() {
           
           <button
             onClick={handleGenerateImage}
-            disabled={isLoadingImage || (!productImage && !activeImageUrl) || !prompt}
+            disabled={isLoadingImage || !prompt}
             className="w-full flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-900 disabled:text-gray-500 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 text-lg"
           >
             {isLoadingImage ? (
               <>
                 <div className="h-5 w-5 mr-3 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
-                Generating Image...
+                {loadingStep || 'Generating Image...'}
               </>
             ) : "Generate Image"}
           </button>
@@ -451,7 +468,7 @@ export default function App() {
             {isLoadingImage && !activeImageUrl ? (
                <div className="text-center text-gray-400">
                 <div className="h-12 w-12 mx-auto mb-4 border-4 border-t-transparent border-indigo-500 rounded-full animate-spin"></div>
-                <p className="font-semibold">Creating your masterpiece...</p>
+                <p className="font-semibold">{loadingStep || 'Creating your masterpiece...'}</p>
                 <p className="text-sm text-gray-500">This can take a moment.</p>
               </div>
             ) : activeImageUrl ? (

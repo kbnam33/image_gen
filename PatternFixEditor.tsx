@@ -30,6 +30,8 @@ const AnnotatedImage: React.FC<AnnotatedImageProps> = ({ imageSrc, canvasRef, on
         if (!canvas || !image || !container || !image.complete || image.naturalWidth === 0) return;
 
         const { width: containerWidth, height: containerHeight } = container.getBoundingClientRect();
+        if (containerWidth === 0 || containerHeight === 0) return;
+        
         const { naturalWidth, naturalHeight } = image;
         const aspectRatio = naturalWidth / naturalHeight;
 
@@ -41,8 +43,23 @@ const AnnotatedImage: React.FC<AnnotatedImageProps> = ({ imageSrc, canvasRef, on
         }
 
         if (canvas.width !== newWidth || canvas.height !== newHeight) {
-          canvas.width = newWidth;
-          canvas.height = newHeight;
+            // Save the current drawing before resizing
+            const currentDrawing = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height);
+
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+
+            // Restore the drawing if it existed
+            if (currentDrawing && currentDrawing.width > 0 && currentDrawing.height > 0) {
+                // Create a temporary canvas to hold the old drawing
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = currentDrawing.width;
+                tempCanvas.height = currentDrawing.height;
+                tempCanvas.getContext('2d')?.putImageData(currentDrawing, 0, 0);
+
+                // Draw the old drawing onto the new canvas, scaling it to fit
+                canvas.getContext('2d')?.drawImage(tempCanvas, 0, 0, newWidth, newHeight);
+            }
         }
     }, [canvasRef]);
 
